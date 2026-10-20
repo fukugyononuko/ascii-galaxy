@@ -25,7 +25,9 @@ Chill is treated as sound that asks no tension of the listener. It is built from
 
 ### Harmony: never fully resolve
 - Chords have four or more notes (maj7, m7, 9, 11, 13). No plain triads.
-- Avoid a strong V7 → I. Return softly through sus4, ♭VII7, or IVm7 instead.
+- The dominant of the current key never resolves to its tonic: no V7 → I (in C: no G7, G9, or G13 → C, Cmaj7, Cmaj9). Return home softly instead: the dominant as sus4 (G13sus4 → Cmaj9), ♭VII7 → I, or IVm7 → I.
+- Secondary dominants that resolve to other chords are part of the style and are allowed (in C: E7 → Am7, A7(♭9) → Dm9, C7 → Fmaj7).
+- The rule holds on the generated chord sequence, not only inside each candidate below: also across the boundary between two progressions and across key changes, where "current key" means the key in force at the second chord. The generator decides each chord one chord ahead: before emitting a chord, it checks it against the next chord (and the key in force there); if the pair would be V7 → I, it emits the sus4 form of that dominant instead.
 - Progressions are chosen by weight (Markov chain). Candidates, written in C:
   - IVmaj7 → III7 → VIm7 → Vm7 I7: Fmaj7 → E7 → Am7 → Gm7 C7
   - A swaying ii–V–I: Dm9 → G13sus4 → Cmaj9 → A7(♭9)
@@ -61,25 +63,38 @@ Patches are data (oscillators, ratios, envelopes, filter settings); A02 builds t
 - Chime: FM bell with a non-integer ratio.
 - Master chain (built once by A02): low-pass at about 2.5 kHz, gentle saturation, tape wobble (pitch LFO at 0.3 Hz, ±6 cents), vinyl noise (band-limited noise and rare clicks), convolution reverb of about 2.5 s from a decaying-noise impulse response.
 
+### Loudness limits (R-13)
+These numbers are the limits R-13 refers to. They may be tuned in build step 4 only by a PR that changes this section.
+- Every patch envelope has an attack of at least 5 ms (drums included) and a release of at least 30 ms.
+- The master output fades in over 4 s after "♪" is pressed.
+- Measured on the rendered output in 100 ms windows: peak ≤ −6 dBFS in every window; spectral centroid ≤ 3 kHz in every window and ≤ 2 kHz over the whole render.
+- Momentary loudness (400 ms windows, 100 ms hop) never rises by more than 10 dB from one window to the next, after the fade-in.
+
 ## A01 DisplayAccess / A02 AudioAccess
 - A01 draws a cell array onto a Canvas 2D context (background fill, then glyphs grouped by colour).
 - A02 owns the AudioContext (or an OfflineAudioContext in tests), the master chain, and a look-ahead scheduler (about 100 ms ahead).
 
 ## U01 Clock / U02 Random / U03 Pitch
-- U01: fixed 1/60 s steps driven by requestAnimationFrame. Modes: live, still (reduced motion), paused (off-screen via IntersectionObserver), fixed (tests).
+- U01: pure. Turns the frame times that C01 passes in (from requestAnimationFrame) into fixed 1/60 s steps. Modes: live, still (reduced motion), paused (off-screen), fixed (tests). C01 sets the mode from matchMedia and IntersectionObserver; U01 itself uses no browser API.
 - U02: a small seeded PRNG, so tests can reproduce the same sky and the same music.
 - U03: MIDI ↔ frequency, scales, chord spelling, intervals.
 
 ## Verification
 | Target | Check | Kind |
 |---|---|---|
-| E04 harmony | Every generated chord has four or more notes and no strong V7 → I | Unit test |
+| E04 harmony | Over 30 minutes of generated bars for 5 seeds: every chord has four or more notes, and no pair of consecutive chords is V7 → I in the key in force at the second chord, including at progression boundaries and key changes | Unit test |
 | E04 voicing | Every voicing stays within C3–C5 | Unit test |
 | E04 rhythm | Timing jitter stays within ±8 ms | Unit test |
 | E04 melody | The melody never leaves the current scale; more than half of the steps are rests | Unit test |
-| R-13 | Render 60 s through OfflineAudioContext: peak ≤ −6 dBFS, spectral centroid ≤ 2 kHz | Browser test (UC-05) |
-| R-07 | Screenshots at 1440 px and 390 px, compared side by side with the reference | Visual |
-| R-10 | Does it sound chill? | The user listens and decides |
+| E04 chime (R-12) | The chime pitch is in the current key's scale, also right after a key change | Unit test |
+| R-10 | Generate 30 minutes of bars from E04 with a fixed seed (no audio): every bar from 1 to the end is produced with no gap, and no 16-bar window of notes (all layers together) appears twice | Unit test |
+| R-13 patches | Every patch from E05 has attack ≥ 5 ms and release ≥ 30 ms | Unit test |
+| R-13 output | Render 60 s through OfflineAudioContext and check every limit in "Loudness limits" | Browser test (UC-05) |
+| E03 (R-05) | Flares start at random intervals of a few minutes and last about 20 s | Unit test |
+| U01 (R-08) | Still mode yields one step; paused mode yields none; live mode yields fixed 1/60 s steps | Unit test |
+| R-11 | No AudioContext exists before the "♪" button is pressed | Browser test |
+| R-01–R-07 | Screenshots at 1440 px and 390 px, compared side by side with the reference | Visual |
+| R-10 (feel) | Does it sound chill? | The user listens and decides |
 
 Each automated check is first shown to catch one deliberately broken input before its result is trusted.
 
@@ -88,4 +103,4 @@ Each automated check is first shown to catch one deliberately broken input befor
 2. Rotation, twinkle, colour glints, E03 flares
 3. E04 as pure functions with unit tests
 4. E05, A02, the "♪" button, the chime
-5. Publish to GitHub Pages
+5. Publish to GitHub Pages; add `check:workflows` (R-21) with the Pages workflow
