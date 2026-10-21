@@ -82,11 +82,11 @@ flowchart TB
 ## 6. Core use cases and call chains
 | ID | Use case | Call chain |
 |---|---|---|
-| UC-01 | Open the page and watch: the galaxy turns, stars twinkle | C01 (requestAnimationFrame) → U01.advance(now) → M01.step(dt) → E03.update(t) → E01.field(t, flares) → E02.rasterize(field, t) → A01.draw(cells) → R01 |
+| UC-01 | Open the page and watch: the galaxy turns, stars twinkle | C01 (requestAnimationFrame) → U01.advance(now) → M01.step(dt) → E03.update(t, rng from U02) → E01.field(t, flares) → E02.rasterize(field, t) → A01.draw(cells) → R01 |
 | UC-02 | Press "♪": music starts and the layers change every 8 bars | C01 (button) → M01.startMusic() → A02.open() → R02. Each bar, ahead of time: M01 → E04.nextBar(state, rng from U02, pitches from U03) → notes → E05.patch(note, layer) → A02.schedule(patch, when) → R02 |
-| UC-03 | A star brightens and a chime in the current key sounds | Inside UC-01, E03.update emits a Flare → M01 → E01.field(t, flares) → E02 → A01 → R01; and, once music has started, M01 → E04.chime(key) → E05.patch → A02.schedule → R02 |
-| UC-04 | Reduced motion shows one still frame; off-screen stops | C01 (matchMedia or IntersectionObserver) → U01 mode still or paused. Still: M01.step once at a settled time → E03 → E01 → E02 → A01 → R01. Paused: M01 is not stepped |
-| UC-05 | A test renders one minute of sound and checks the limits (R-13) | C02 → U01 mode fixed, U02 seeded → M01.startMusic() with A02 bound to an OfflineAudioContext (R02). For 60 s of bars: M01 → E04 → E05 → A02.schedule → R02 render → C02 measures the rendered buffer |
+| UC-03 | A star brightens and a chime in the current key sounds | Inside UC-01, E03.update (rng from U02) emits a Flare → M01 → E01.field(t, flares) → E02 → A01 → R01; and, once music has started, M01 → E04.chime(key, scale from U03) → E05.patch → A02.schedule → R02 |
+| UC-04 | Reduced motion shows one still frame; off-screen stops | C01 (matchMedia or IntersectionObserver) → U01 mode still or paused. Still: M01.step once at a settled time → E03 (rng from U02) → E01 → E02 → A01 → R01. Paused: M01 is not stepped |
+| UC-05 | A test renders one minute of sound and checks the limits (R-13) | C02 → U01 mode fixed, U02 seeded → M01.startMusic() with A02 bound to an OfflineAudioContext (R02). For the length of the render: M01 → E04 (pitches from U03) → E05 → A02.schedule → R02 render; flares come from E03 (U02) and trigger E04.chime as in UC-03 → C02 measures the rendered buffer |
 
 Where each component appears:
 
@@ -96,25 +96,30 @@ Where each component appears:
 | C02 | UC-05 |
 | M01 | UC-01–UC-05 |
 | E01, E02, A01, R01 | UC-01, UC-03, UC-04 |
-| E03 | UC-01, UC-03, UC-04 |
+| E03 | UC-01, UC-03, UC-04, UC-05 |
 | E04, E05, A02, R02 | UC-02, UC-03, UC-05 |
 | U01 | UC-01, UC-04, UC-05 |
-| U02 | UC-02, UC-05 |
-| U03 | UC-02 |
+| U02 | UC-01, UC-02, UC-03, UC-04, UC-05 |
+| U03 | UC-02, UC-03, UC-05 |
 
 ## 7. Requirements traceability
-| Requirement | Where it is met | How it is checked (02 Verification) |
+Rule IDs and checks are in [02-detailed-design.md](02-detailed-design.md), "Verification".
+
+| Requirement | Where it is met | How it is checked |
 |---|---|---|
-| R-01–R-04 | E01 | Screenshots (R-07 row) |
-| R-05 | E03, E01 | Screenshots; E03 unit test on flare timing |
-| R-06 | E02 | Screenshots |
-| R-07 | E02 (cell size from screen width) | Screenshots at 1440 px and 390 px |
-| R-08 | C01, U01 (UC-04) | U01 unit test on modes |
-| R-10 | E04, M01 (bar scheduling) | Long-run generation test |
-| R-11 | C01, A02 (UC-02) | Browser test: no AudioContext before the button is pressed |
-| R-12 | E03 → M01 → E04.chime (UC-03) | E04 unit test: the chime pitch is in the current scale |
-| R-13 | E05 (envelopes), A02 (master chain) | Patch unit test; rendered-loudness browser test |
-| R-20 | Outside the runtime layers: `scripts/check-privacy.mjs`, run in CI and before each commit | CI step "Check privacy" |
+| R-01 | E01 (SK-4) | SK-4 unit test; screenshots |
+| R-02 | E01 (SK-5) | SK-5 unit test; screenshots |
+| R-03 | E01 (SK-2, SK-3) | SK-2 and SK-3 unit tests at fixed times |
+| R-04 | E01 (SK-6) | SK-6 unit test |
+| R-05 | E03 (EV-1, EV-2), E01 (SK-7) | EV-1, EV-2, SK-7 unit tests |
+| R-06 | E02 (RS-3, RS-4) | RS-3 and RS-4 unit tests; screenshots |
+| R-07 | E02 (RS-1) | RS-1 unit test; screenshots at 1440 px and 390 px |
+| R-08 | C01, U01 (UC-04) | Browser test: reduced motion and off-screen |
+| R-10 | E04 (H, V, RH, M, F rules), M01 (bar scheduling) | Music unit tests; R-10 long-run test; listening |
+| R-11 | C01, A02 (UC-02) | Browser test: before and after the button; only one interactive element |
+| R-12 | E03 (EV-3) → M01 → E04 (F-3) (UC-03) | EV-3 and F-3 unit tests |
+| R-13 | E05 (L-1), A02 (L-2–L-4) | L-1 unit test; forced and natural renders |
+| R-20 | Outside the runtime layers: `scripts/check-privacy.mjs` | CI step "Check privacy" on every push and PR: current tracked files, all commit messages, PR title and body. Not covered yet: file contents of past commits (#3). Running it before each commit is a procedure, not enforced |
 | R-21 | Outside the runtime layers: `.github/workflows/`, `.github/dependabot.yml` | `check:workflows` (every `uses:` pinned to a 40-hex SHA), added with the Pages workflow in build step 5 |
 
 ## 8. Open questions
