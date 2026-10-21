@@ -115,7 +115,7 @@ Rule IDs and checks are in [02-detailed-design.md](02-detailed-design.md), "Veri
 | R-06 | E02 (RS-3, RS-4) | RS-3 and RS-4 unit tests; screenshots |
 | R-07 | E02 (RS-1) | RS-1 unit test; screenshots at 1440 px and 390 px |
 | R-08 | C01, U01 (UC-04) | Browser test: reduced motion and off-screen |
-| R-10 | E04 (H, V, RH, M, F rules), M01 (bar scheduling) | Music unit tests; R-10 long-run test; listening |
+| R-10 | E04 (H, V, RH, M, F rules), E05 (T rules), A02 (MC rules), M01 (bar scheduling) | Music, timbre, and master-chain unit tests; R-10 long-run test; listening |
 | R-11 | C01, A02 (UC-02) | Browser test: before and after the button; only one interactive element |
 | R-12 | E03 (EV-3) → M01 → E04 (F-3) (UC-03) | EV-3 and F-3 unit tests |
 | R-13 | E05 (L-1), A02 (L-2–L-4) | L-1 unit test; forced and natural renders |
