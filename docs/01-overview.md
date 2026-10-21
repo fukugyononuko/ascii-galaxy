@@ -6,14 +6,14 @@ Requirements: [00-requirements.md](00-requirements.md). Details of each componen
 A single static page. It draws a slowly turning ASCII galaxy on a white monospace grid and, after the "♪" button is pressed, plays chill music composed on the fly. There are no settings, no accounts, and nothing is saved.
 
 ## 2. What does not change (the core)
-These are fixed as rules, not treated as volatility.
+These are fixed as rules, not treated as volatility. Each has a check in 02 Verification, "Core".
 
-| Rule | Content |
-|---|---|
-| The cell grid | The screen is a grid of monospace cells. Each cell shows at most one glyph on a filled background |
-| Brightness → cell | What is drawn is decided only by a brightness value in [0, 1] per cell plus a colour tag |
-| Pitch | 12-tone equal temperament, A4 = 440 Hz. Notes are MIDI numbers |
-| Time in music | Music time is counted in bars and 16th-note steps in 4/4. Wall-clock time is derived from the tempo |
+| ID | Rule | Content |
+|---|---|---|
+| C-1 | The cell grid | The screen is a grid of monospace cells. Each cell shows at most one glyph on a filled background |
+| C-2 | Brightness → cell | What is drawn is decided only by a brightness value in [0, 1] per cell plus a colour tag. E01 returns values in [0, 1]; E02 clamps any value outside it |
+| C-3 | Pitch | 12-tone equal temperament, A4 = MIDI 69 = 440 Hz. Notes are MIDI numbers |
+| C-4 | Time in music | 4/4; a bar has 16 steps of a 16th note; one step lasts 60 / BPM / 4 s |
 
 ## 3. Volatility analysis
 | ID | Volatility | How it may change | Axis | Encapsulated in |
@@ -76,7 +76,7 @@ flowchart TB
 
 - Engines never call each other. M01 passes the output of one Engine to the next.
 - Engines are pure: they take state, time, and a random source, and return data (a brightness field, cells, events, notes, patches).
-- Browser APIs are used only by C01 (DOM, the "♪" button, requestAnimationFrame, IntersectionObserver, matchMedia) and by A01 and A02 (Canvas 2D, Web Audio). M01, the Engines, and the Utilities never touch them. C02 can therefore test M01, every Engine, and every Utility without a browser; only tests that go through A01 or A02 (UC-05) need one.
+- Browser APIs are used only by C01 (DOM, the "♪" button, requestAnimationFrame, IntersectionObserver, matchMedia) and by A01 and A02 (Canvas 2D, Web Audio). M01, the Engines, and the Utilities never touch them. C02 can therefore test M01, every Engine, and every Utility without a browser. Tests that go through C01, A01, or A02 need one: the R-11 test (UC-02: C01, A02), the R-08 test (UC-04: C01, A01), and the sound renders (UC-05: A02).
 - Utilities may be used from any layer.
 
 ## 6. Core use cases and call chains
@@ -84,21 +84,21 @@ flowchart TB
 |---|---|---|
 | UC-01 | Open the page and watch: the galaxy turns, stars twinkle | C01 (requestAnimationFrame) → U01.advance(now) → M01.step(dt) → E03.update(t, rng from U02) → E01.field(t, flares) → E02.rasterize(field, t) → A01.draw(cells) → R01 |
 | UC-02 | Press "♪": music starts and the layers change every 8 bars | C01 (button) → M01.startMusic() → A02.open() → R02. Each bar, ahead of time: M01 → E04.nextBar(state, rng from U02, pitches from U03) → notes → E05.patch(note, layer) → A02.schedule(patch, when) → R02 |
-| UC-03 | A star brightens and a chime in the current key sounds | Inside UC-01, E03.update (rng from U02) emits a Flare → M01 → E01.field(t, flares) → E02 → A01 → R01; and, once music has started, M01 → E04.chime(key, scale from U03) → E05.patch → A02.schedule → R02 |
+| UC-03 | A star brightens and a chime in the current key sounds | Within the UC-01 frame loop (C01 → U01.advance → M01.step), E03.update (rng from U02) emits a Flare → M01 → E01.field(t, flares) → E02 → A01 → R01; and, once music has started, M01 → E04.chime(key, scale from U03) → E05.patch → A02.schedule → R02 |
 | UC-04 | Reduced motion shows one still frame; off-screen stops | C01 (matchMedia or IntersectionObserver) → U01 mode still or paused. Still: M01.step once at a settled time → E03 (rng from U02) → E01 → E02 → A01 → R01. Paused: M01 is not stepped |
-| UC-05 | A test renders one minute of sound and checks the limits (R-13) | C02 → U01 mode fixed, U02 seeded → M01.startMusic() with A02 bound to an OfflineAudioContext (R02). For the length of the render: M01 → E04 (pitches from U03) → E05 → A02.schedule → R02 render; flares come from E03 (U02) and trigger E04.chime as in UC-03 → C02 measures the rendered buffer |
+| UC-05 | A test renders sound and checks the limits (R-13): a forced 60 s render and a natural 6-minute render | C02 → U01 mode fixed, U02 seeded, style chosen (forced test style or default) → M01.startMusic() with A02 bound to an OfflineAudioContext (R02). For the length of the render: M01 → E04 (pitches from U03) → E05 → A02.schedule → R02 render; flares come from E03 (U02) and trigger E04.chime as in UC-03 → C02 measures the rendered buffer |
 
 Where each component appears:
 
 | Component | Use cases |
 |---|---|
-| C01 | UC-01, UC-02, UC-04 |
+| C01 | UC-01, UC-02, UC-03, UC-04 |
 | C02 | UC-05 |
 | M01 | UC-01–UC-05 |
 | E01, E02, A01, R01 | UC-01, UC-03, UC-04 |
 | E03 | UC-01, UC-03, UC-04, UC-05 |
 | E04, E05, A02, R02 | UC-02, UC-03, UC-05 |
-| U01 | UC-01, UC-04, UC-05 |
+| U01 | UC-01, UC-03, UC-04, UC-05 |
 | U02 | UC-01, UC-02, UC-03, UC-04, UC-05 |
 | U03 | UC-02, UC-03, UC-05 |
 

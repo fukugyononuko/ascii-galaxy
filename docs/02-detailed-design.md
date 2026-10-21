@@ -13,12 +13,12 @@ Component IDs are from [01-overview.md](01-overview.md). Each rule has an ID; th
 
 ## E02 RasterEngine
 - RS-1 Grid: cell width = screen width ÷ 124, clamped to 8–13 px. Cell height = width × 1.45. Grid lines are a very faint grey.
-- RS-2 Each cell samples brightness at 8 points and averages them (for smooth edges).
+- RS-2 Each cell samples brightness at 8 fixed points (a constant table of offsets inside the cell, exported for tests) and averages them (for smooth edges).
 - RS-3 The cell background is filled with a grey that follows the brightness. The glyph is chosen from the ramp `` .:;t%SX8#@``; brighter means a later (denser) glyph.
-- RS-4 Colour glints: each cell has its own staggered clock with a re-roll interval drawn from [2, 3] s. On each re-roll, a small share of cells take a faint colour: blue or pink in the arms, amber in the core (R-06).
+- RS-4 Colour glints: each cell has its own staggered clock with a re-roll interval drawn from [2, 3] s. At any moment, 2–5% of the galaxy's cells (cells with brightness > 0.1) show a faint colour: blue or pink in the arms, amber in the core (R-06).
 
 ## E03 EventEngine
-- EV-1 Flare intervals are drawn uniformly from [120, 300] s using U02 (R-05 "every few minutes").
+- EV-1 Flare intervals are drawn uniformly from [120, 300] s using U02: interval = 120 + 180 × u for a uniform u in [0, 1) (R-05 "every few minutes").
 - EV-2 A flare lasts 20 s ± 2 s: it rises for 8 s and fades for 12 s (R-05 "about 20 seconds").
 - EV-3 The event is emitted once, at its start, so M01 can trigger the chime (R-12).
 
@@ -29,12 +29,13 @@ Chill is treated as sound that asks no tension of the listener. It is built from
 - H-1 Chords have four or more notes (maj7, m7, 9, 11, 13). No plain triads.
 - H-2 The dominant of the current key never resolves to its tonic: no V7 → I (in C: no G7, G9, or G13 → C, Cmaj7, Cmaj9). Return home softly instead: the dominant as sus4 (G13sus4 → Cmaj9), ♭VII7 → I, or IVm7 → I. Secondary dominants that resolve to other chords are part of the style and are allowed (in C: E7 → Am7, A7(♭9) → Dm9, C7 → Fmaj7).
 - H-3 H-2 holds on the generated chord sequence: also across the boundary between two progressions and across key changes, where "current key" means the key in force at the second chord. The generator decides each chord one chord ahead: before emitting a chord, it checks it against the next chord (and the key in force there); if the pair would be V7 → I, it emits the sus4 form of that dominant instead.
-- H-4 Progressions are chosen by weight (Markov chain) from these candidates, written in C:
-  - IVmaj7 → III7 → VIm7 → Vm7 I7: Fmaj7 → E7 → Am7 → Gm7 C7
-  - A swaying ii–V–I: Dm9 → G13sus4 → Cmaj9 → A7(♭9)
-  - Descending: Fmaj9 → Em7 → Dm9 → Cmaj7
-  - Two-chord vamp (Dorian): Dm9 ⇄ G9
-- H-5 Key changes happen every 32–64 bars, to the relative key, a minor third up, or the parallel key.
+- H-4 A progression is a 4-bar template, one cell per bar (`|` separates bars). Templates are chosen by weight (Markov chain) from these candidates, written in C:
+  - IVmaj7 → III7 → VIm7 → Vm7 I7: | Fmaj7 | E7 | Am7 | Gm7 C7 | (the last bar holds two chords, two beats each)
+  - A swaying ii–V–I: | Dm9 | G13sus4 | Cmaj9 | A7(♭9) |
+  - Descending: | Fmaj9 | Em7 | Dm9 | Cmaj7 |
+  - Two-chord vamp (Dorian): | Dm9 | G9 | Dm9 | G9 |
+  Each generated progression starts on a bar that is a multiple of 4 (counting from 0) and equals one template transposed to the current key, except where H-3 replaced a dominant by its sus4 form.
+- H-5 Key changes happen at progression starts, 32–64 bars apart (both ends included), to the relative key, a minor third up, or the parallel key. The gap is 32 + 4 × floor(9 × u) bars for a uniform u in [0, 1) from U02.
 
 ### Voicing: keep it close
 - V-1 Upper voices are rootless: they hold the 3rd, 7th, and color tones (9th, 13th), never the root's pitch class.
@@ -43,10 +44,10 @@ Chill is treated as sound that asks no tension of the listener. It is built from
 - V-4 Bass plays only the root or the fifth, 12–24 semitones below the lowest upper voice, and each bass note lasts at most one beat.
 
 ### Rhythm: lean back
-- RH-1 Tempo is chosen from [72, 84] BPM at each key change.
+- RH-1 Tempo is chosen at the start and at each key change: BPM = 72 + 12 × u for a uniform u in [0, 1) from U02.
 - RH-2 16th-note swing at 58%: every off-beat 16th starts at 58% of its 8th-note span.
 - RH-3 Half-time feel: kick on beat 1 and the "and" of 3; snare on beat 3, played 15 ms late.
-- RH-4 Timing jitter within ±8 ms and velocity jitter within ±15% of the nominal values.
+- RH-4 Timing jitter is uniform in ±8 ms and velocity jitter uniform in ±15% of the nominal values (both present: the wobble is part of the style).
 - RH-5 Chords are strummed from the lowest note up, 12 ms apart.
 
 ### Melody: sparse and repeated
@@ -56,9 +57,10 @@ Chill is treated as sound that asks no tension of the listener. It is built from
 - M-4 More than half of the 16th steps are rests. Notes on beats 1 and 3 are chord tones; other notes may be passing notes within M-1.
 
 ### Form: no big peaks
-- F-1 At each 8-bar boundary, exactly one layer is added or removed, in the cycle pad → electric piano → bass → drums → melody → drop the drums …; layers change at no other time.
+- F-1 Layers change only at 8-bar phrase boundaries, one layer at a time, following this list of phrases (P = pad, E = electric piano, B = bass, D = drums, M = melody). Phrases 1–2 are the intro; phrases 3–10 then repeat in order (10 → 3 adds B).
+  1 P · 2 P E · 3 P E B · 4 P E B D · 5 P E B D M · 6 P E B M · 7 P E B D M · 8 P E B M · 9 P E M · 10 P E
 - F-2 Drums do not play all the time: no more than 4 consecutive 8-bar phrases with drums.
-- F-3 Chime (R-12): the 9th (the 2nd scale degree, an octave up) or the 5th of the current key, played once.
+- F-3 Chime (R-12): exactly one note per flare, either the 5th (tonic + 7 semitones) or the 9th (tonic + 14 semitones), where the tonic is the current key's tonic in octave 5 (MIDI 72–83).
 
 ## E05 VoiceEngine
 Patches are data (oscillators, ratios, envelopes, filter settings); A02 builds the Web Audio graph from them.
@@ -86,7 +88,15 @@ These numbers are the limits R-13 refers to. They may be tuned in build step 4 o
 - U03: MIDI ↔ frequency, scales, chord spelling, intervals.
 
 ## Verification
-Every rule ID above has a row. Unless stated otherwise, unit tests run 5 seeds; "30 minutes" means the bars of 30 minutes of music generated by E04 without audio, at fixed time (U01 fixed).
+Every rule ID above, and C-1–C-4 from 01 §2, has a row. Unless stated otherwise, unit tests run 5 seeds; "30 minutes" means the bars of 30 minutes of music generated by E04 without audio, at fixed time (U01 fixed). "u fixed to 0, 0.5, 0.999" means the test replaces U02 with a stub returning that value and checks the exact result of the formula.
+
+### Core (unit tests)
+| Rule | Check |
+|---|---|
+| C-1 | The cell type holds exactly one glyph (a string of length 1) or none; A01 draws one glyph per cell at most (a canvas spy counts fillText calls per cell) |
+| C-2 | E01 values over 100 random times (flare peaks included) are all in [0, 1]; E02 maps −0.5 to the same cell as 0 and 1.5 to the same cell as 1 |
+| C-3 | U03: MIDI 69 → 440 Hz, 60 → 261.63 Hz (± 0.01), 81 → 880 Hz; frequency → MIDI is the inverse |
+| C-4 | A bar has 16 steps; at 72 and 84 BPM one step lasts 60 / BPM / 4 s |
 
 ### Sky and events (unit tests at fixed times)
 | Rule | Check |
@@ -99,10 +109,10 @@ Every rule ID above has a row. Unless stated otherwise, unit tests run 5 seeds; 
 | SK-6 | Each star's brightness over 60 s has a period in [5, 8] s; no two stars share both period and phase |
 | SK-7 | During a flare, its star's brightness follows the EV-2 envelope; outside flares it does not |
 | RS-1 | Cell size at 390, 1024, 1440, and 2560 px widths |
-| RS-2 | A half-covered cell gets about half the brightness of a fully covered one |
+| RS-2 | The offset table has exactly 8 entries, all inside the cell; a cell's value equals the mean of the field at those 8 points |
 | RS-3 | The glyph index is non-decreasing in brightness |
-| RS-4 | Each cell's re-roll interval is in [2, 3] s; glint colours appear only in the regions named |
-| EV-1 | Over 30 minutes, every interval between flares is in [120, 300] s |
+| RS-4 | Each cell's re-roll interval is in [2, 3] s; at 100 sampled times, 2–5% of cells with brightness > 0.1 are coloured; blue and pink appear only in arm cells and amber only in core cells |
+| EV-1 | With u fixed to 0, 0.5, 0.999: intervals of 120, 210, and 299.82 s. With real seeds over 2 hours: every interval in [120, 300] s, and both halves of the range occur |
 | EV-2 | Every flare lasts 20 s ± 2 s (8 s rise, 12 s fade) |
 | EV-3 | Each flare emits exactly one event, at its start |
 
@@ -111,23 +121,23 @@ Every rule ID above has a row. Unless stated otherwise, unit tests run 5 seeds; 
 |---|---|
 | H-1 | Every chord has four or more notes |
 | H-2, H-3 | No pair of consecutive chords is V7 → I in the key in force at the second chord, including at progression boundaries and key changes |
-| H-4 | Every 4-chord window inside a progression matches one of the candidates, transposed to the current key |
-| H-5 | Every key change comes 32–64 bars after the previous one and goes to the relative key, a minor third up, or the parallel key |
+| H-4 | The bars are split into 4-bar progressions starting at multiples of 4; each equals one template transposed to the current key, bar by bar and chord by chord, allowing only H-3's sus4 replacements |
+| H-5 | With u fixed to 0, 0.5, 0.999: gaps of 32, 48, and 64 bars. With real seeds: every gap is 32–64 bars (so no stretch longer than 64 bars without a change), each change starts a progression, and each target is the relative key, a minor third up, or the parallel key |
 | V-1, V-2 | No upper voice has the root's pitch class; every upper voice is in MIDI 48–72 |
 | V-3 | For each chord change, no other voicing satisfying V-1 and V-2 has a smaller total movement (checked by enumerating them) |
 | V-4 | Every bass note is the root or fifth, 12–24 semitones below the lowest upper voice, and at most one beat long |
-| RH-1 | Every tempo is in [72, 84] and changes only at key changes |
+| RH-1 | With u fixed to 0, 0.5, 0.999: 72, 78, and 83.988 BPM. With real seeds: every tempo in [72, 84], set at the start and changed only at key changes |
 | RH-2 | Every off-beat 16th (before jitter) starts at 58% of its 8th-note span |
-| RH-3 | Kicks only on beat 1 and the "and" of 3; snares only on beat 3, 15 ms late (before jitter) |
-| RH-4 | Every onset is within ±8 ms and every velocity within ±15% of its nominal value |
+| RH-3 | In every bar with drums: a kick on beat 1 and on the "and" of 3, a snare on beat 3 played 15 ms late (before jitter), and no kick or snare anywhere else |
+| RH-4 | Every onset is within ±8 ms and every velocity within ±15% of its nominal value; over 30 minutes the timing offsets have a standard deviation of at least 3 ms and the velocity offsets at least 5% (a uniform spread gives about 4.6 ms and 8.7%) |
 | RH-5 | Each chord's notes start from the lowest up, 12 ms apart |
 | M-1 | Every melody note is in the scale of the current key |
 | M-2 | Every phrase's melody range is ≤ 18 semitones |
 | M-3 | In every phrase, the three later 2-bar blocks have the same onset rhythm as the first |
 | M-4 | More than half of the steps are rests; notes on beats 1 and 3 are chord tones |
-| F-1 | Layer sets differ by exactly one layer across each 8-bar boundary and never change inside a phrase |
+| F-1 | The sequence of layer sets, one per phrase, equals the list in F-1 (phrases 1–10, then 3–10 repeated), and the layer set never changes inside a phrase |
 | F-2 | Never more than 4 consecutive phrases with drums; drums appear at least once |
-| F-3 | Every chime's pitch class is the current key's 2nd degree or 5th, also right after a key change |
+| F-3 | Every chime call returns exactly one note, whose MIDI number is the current key's tonic in octave 5 plus 7 or plus 14, also right after a key change |
 | R-10 | Every bar from 1 to the end is produced with no gap, and no 16-bar window of notes (all layers together) appears twice |
 
 ### Sound output (browser tests through OfflineAudioContext, UC-05)
@@ -135,7 +145,7 @@ Every rule ID above has a row. Unless stated otherwise, unit tests run 5 seeds; 
 |---|---|
 | L-1 | Every patch E05 produces (all instruments, the chime) has attack ≥ 5 ms and release ≥ 30 ms (unit test) |
 | L-2–L-4 | **Forced render:** a test style with every layer on from bar 1, a flare forced at 10 s and 40 s (chime), and vinyl clicks forced every 5 s, rendered for 60 s. Every source the master chain can play sounds in it. Every limit in L-2–L-4 is checked |
-| L-2–L-4 | **Natural render:** the default style for 6 minutes with 2 seeds, long enough to pass through every layer of F-1 (at 72 BPM, the slowest tempo, the melody enters at bar 33, about 107 s in). Every limit is checked |
+| L-2–L-4 | **Natural render:** the default style for 6 minutes with 2 seeds, long enough to pass through every phrase of F-1 (at 72 BPM, the slowest tempo, the 10 phrases take 80 bars, about 267 s). Every limit is checked |
 
 ### Browser boundary (browser tests)
 | Requirement | Check |
