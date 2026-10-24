@@ -133,7 +133,9 @@ describe("check-privacy --text-file", () => {
   });
 
   it("redacts a long line with many case-mapped matches quickly", () => {
-    const r = run([`--${"i̇".repeat(50000)}`], "İ", process.cwd(), 3000);
+    // 40,000 × 3 bytes stays under Linux's 128 KiB limit for one argument (MAX_ARG_STRLEN)
+    const r = run([`--${"i̇".repeat(40000)}`], "İ", process.cwd(), 3000);
+    expect(r.error).toBeUndefined(); // spawned, and not killed by the timeout
     expect(r.status).toBe(2);
     expect(leaked(r, ["İ"])).toEqual([]);
   });
