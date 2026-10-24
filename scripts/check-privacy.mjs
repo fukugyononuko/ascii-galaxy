@@ -27,23 +27,31 @@ let denylist = [];
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// Returns the line with no denied word in it. Matches become MARKER first (readable output); then any denied
-// word still present (inside the marker, or formed where two parts meet) is deleted. Each deletion shortens the
-// line, so the loop ends, and it ends only when no denied word is left.
+// One notion of "contains", shared by detection and by safe(): both sides lowercased, then substring.
+const contains = (text, word) => text.toLowerCase().includes(word.toLowerCase());
+
+// The shortest span [i, j) of text that contains word in the sense above. Lowercasing can change length
+// (e.g. "İ" becomes two code points), so the span is searched on the original text, not mapped from indexes.
+function span(text, word) {
+  let j = 1;
+  while (!contains(text.slice(0, j), word)) j++;
+  let i = j - 1;
+  while (!contains(text.slice(i, j), word)) i--;
+  return [i, j];
+}
+
+// Returns the line with no denied word in it, in the same sense the check uses. Matches become MARKER first
+// (readable output); then, while any denied word is still contained (inside the marker, where two parts meet,
+// or through case mapping), its shortest span is deleted. Each deletion shortens the line, so the loop ends,
+// and it ends only when no denied word is contained.
 function safe(line) {
   let out = String(line);
   for (const word of denylist) out = out.replace(new RegExp(escapeRegExp(word), "giu"), MARKER);
   for (;;) {
-    let hit = null;
-    for (const word of denylist) {
-      const m = new RegExp(escapeRegExp(word), "iu").exec(out);
-      if (m) {
-        hit = m;
-        break;
-      }
-    }
-    if (!hit) return out;
-    out = out.slice(0, hit.index) + out.slice(hit.index + hit[0].length);
+    const word = denylist.find((w) => contains(out, w));
+    if (word === undefined) return out;
+    const [i, j] = span(out, word);
+    out = out.slice(0, i) + out.slice(j);
   }
 }
 
@@ -86,7 +94,8 @@ function main() {
     emit(process.stderr, "check-privacy: no denied words configured, so the text check was skipped (PRIVACY_DENYLIST or .privacy-denylist)");
   } else {
     const sources = [];
-    for (const file of git(["ls-files"]).split("\n").filter((f) => TEXT_FILE.test(f))) {
+    // -z gives raw names; without it git quotes non-ASCII names ("\303\251.md") and they would be skipped
+    for (const file of git(["ls-files", "-z"]).split("\0").filter((f) => TEXT_FILE.test(f))) {
       let text;
       try {
         text = readFileSync(file, "utf8");
@@ -109,9 +118,8 @@ function main() {
     }
 
     for (const [where, raw] of sources) {
-      const text = raw.toLowerCase();
       denylist.forEach((word, i) => {
-        if (text.includes(word.toLowerCase())) problems.push(`${where}: contains a denied word (line ${i + 1} of the list)`);
+        if (contains(raw, word)) problems.push(`${where}: contains a denied word (line ${i + 1} of the list)`);
       });
     }
   }

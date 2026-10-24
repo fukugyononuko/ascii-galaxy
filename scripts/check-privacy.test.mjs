@@ -2,9 +2,10 @@
 // Conditions:
 // - A text passed with --text-file is reported OK only if it was checked against a non-empty denylist and
 //   contains none of the words; anything else exits non-zero.
-// - Nothing the checker prints (stdout or stderr, any line, any exit path) contains any denied word.
+// - Nothing the checker prints (stdout or stderr, any line, any exit path) contains any denied word, using the
+//   checker's own notion of "contains" (both sides lowercased, then substring).
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,23 +19,26 @@ const clean = join(dir, "clean.md");
 const dirty = join(dir, "dirty.md");
 writeFileSync(clean, "A reply with nothing private in it.\n");
 writeFileSync(dirty, `A reply that mentions ${PLANTED} by mistake.\n`);
-// Contains none of the grid's words (not even the letter e), so the success line is really printed
+// Contains none of the grid's words (not even the letters e or i), so the success line is really printed
 const successText = join(dir, "zzz.md");
 writeFileSync(successText, "zzz\n");
 
-// Git runs with no global or system config and no identity from the environment, so the machine does not matter.
-function gitEnv() {
+// A known environment: nothing from the session's Git variables (GIT_DIR, GIT_WORK_TREE, identities, ...)
+// and no global or system Git config, so the machine and the session do not matter.
+function baseEnv() {
   const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
-  for (const k of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"]) delete env[k];
+  for (const k of Object.keys(env)) if (k.startsWith("GIT_") && k !== "GIT_CONFIG_GLOBAL" && k !== "GIT_CONFIG_NOSYSTEM") delete env[k];
+  delete env.EMAIL;
+  delete env.PR_TEXT;
   return env;
 }
 
-function makeRepo({ email = ALLOWED, files = { "a.md": "nothing\n" }, removeFromWorktree = [], message = "init" } = {}) {
+function makeRepo({ email = ALLOWED, files = { "a.md": "zzz\n" }, removeFromWorktree = [], message = "zzz" } = {}) {
   const repo = mkdtempSync(join(tmpdir(), "check-privacy-repo-"));
   const git = (...a) =>
     execFileSync("git", ["-c", `user.email=${email}`, "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...a], {
       cwd: repo,
-      env: gitEnv(),
+      env: baseEnv(),
       stdio: ["ignore", "pipe", "pipe"],
     });
   git("init", "-q");
@@ -46,15 +50,12 @@ function makeRepo({ email = ALLOWED, files = { "a.md": "nothing\n" }, removeFrom
 }
 
 function run(args, denylist = PLANTED, cwd = process.cwd()) {
-  const env = { ...process.env, PRIVACY_DENYLIST: denylist };
-  delete env.PR_TEXT;
-  return spawnSync("node", [SCRIPT, ...args], { encoding: "utf8", env, cwd });
+  return spawnSync("node", [SCRIPT, ...args], { encoding: "utf8", env: { ...baseEnv(), PRIVACY_DENYLIST: denylist }, cwd });
 }
 
-function leaked(r, words) {
-  const out = (r.stdout + r.stderr).toLowerCase();
-  return words.filter((w) => out.includes(w.toLowerCase()));
-}
+// The checker's own notion of "contains"
+const contains = (text, word) => text.toLowerCase().includes(word.toLowerCase());
+const leaked = (r, words) => words.filter((w) => contains(r.stdout + r.stderr, w));
 
 describe("check-privacy --text-file", () => {
   it("fails when the text contains a denied word, without printing the word", () => {
@@ -97,55 +98,80 @@ describe("check-privacy --text-file", () => {
   });
 
   it("stops with exit 2 when a tracked file cannot be read", () => {
-    const repo = makeRepo({ files: { "a.md": "nothing\n", "gone.md": "x\n" }, removeFromWorktree: ["gone.md"] });
+    const repo = makeRepo({ files: { "a.md": "zzz\n", "gone.md": "x\n" }, removeFromWorktree: ["gone.md"] });
     expect(run([], PLANTED, repo).status).toBe(2);
+  });
+
+  it("checks tracked files whose names are not ASCII", () => {
+    const repo = makeRepo({ files: { "a.md": "zzz\n", "日本語.md": `${PLANTED}\n`, "é.md": "zzz\n" } });
+    const r = run([], PLANTED, repo);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("日本語.md: contains a denied word");
+  });
+
+  it("ignores Git variables of the calling session", () => {
+    const repo = makeRepo();
+    const env = { ...baseEnv(), PRIVACY_DENYLIST: PLANTED, GIT_DIR: join(dir, "not-a-git-dir") };
+    // run() and makeRepo() build their own environment; this checks that baseEnv() really drops GIT_DIR
+    expect(Object.keys(baseEnv())).not.toContain("GIT_DIR");
+    expect(spawnSync("node", [SCRIPT], { encoding: "utf8", env, cwd: repo }).status).toBe(2); // GIT_DIR would break git
+    expect(run([], PLANTED, repo).status).toBe(0);
   });
 });
 
-// Grid: kinds of denied word × places a word can reach the output. For every cell, nothing printed contains
-// any denied word. The kinds include words inside the redaction marker and inside the checker's own fixed
-// messages, a one-letter word, and overlapping words.
+// Grid: kinds of denied word × places a word can reach the output. In every cell the word is really put in the
+// named place (checked), the exit code is the one that place produces, and nothing printed contains any denied
+// word. "input" is how the word is written into the place; it may differ from the denylist entry in case.
 describe("check-privacy output never contains a denied word", () => {
   const kinds = {
-    planted: [PLANTED],
-    "inside the marker": ["redacted"],
-    "the marker itself": ["[redacted]"],
-    "in fixed messages": ["OK", "check", "text file", "contains"],
-    "one letter": ["e"],
-    overlapping: [`${PLANTED}ab`, "abc", "bc"],
+    planted: { words: [PLANTED] },
+    "inside the marker": { words: ["redacted"] },
+    "the marker itself": { words: ["[redacted]"] },
+    "in fixed messages": { words: ["OK", "check", "text file", "contains"] },
+    "one letter": { words: ["e"] },
+    overlapping: { words: [`${PLANTED}ab`, "abc", "bc"] },
+    // "İ".toLowerCase() is "i" + U+0307 (two code points); the input uses that lowercase form
+    "Unicode case": { words: ["İ"], input: "i̇" },
   };
+  let n = 0;
   const places = {
-    "text content": (w) => ({ args: ["--text-file", file(`content-${w}`, `has ${w} inside\n`, "plain")] }),
-    "text file path": (w) => ({ args: ["--text-file", file(`path-${w}`, `has ${w} inside\n`, w)] }),
-    "commit address": (w) => ({ cwd: makeRepo({ email: `${w.replace(/[^a-z0-9]/gi, "")}x@example.com` }) }),
-    "unknown argument": (w) => ({ args: [`--${w}`] }),
-    "unreadable text file": (w) => ({ args: ["--text-file", join(dir, `missing-${w}.md`)] }),
-    "tracked file missing from the worktree": (w) => {
-      const name = `gone-${w.replace(/[^a-z0-9]/gi, "")}.md`;
-      return { cwd: makeRepo({ files: { "a.md": "nothing\n", [name]: "x\n" }, removeFromWorktree: [name] }) };
+    "text content": (w) => {
+      const p = join(dir, `content-${++n}.md`);
+      writeFileSync(p, `has ${w} inside\n`);
+      return { args: ["--text-file", p], status: 1, planted: [`has ${w} inside`] };
     },
-    "success line": () => ({ args: ["--text-file", successText] }),
+    "text file path": (w) => {
+      const p = join(dir, `path-${++n}-${w}.md`);
+      writeFileSync(p, `has ${w} inside\n`);
+      return { args: ["--text-file", p], status: 1, planted: [p] };
+    },
+    "commit address": (w) => {
+      const email = `${w}x@example.com`;
+      return { cwd: makeRepo({ email }), status: 1, planted: [email] };
+    },
+    "unknown argument": (w) => ({ args: [`--${w}`], status: 2, planted: [`--${w}`] }),
+    "unreadable text file": (w) => {
+      const p = join(dir, `missing-${++n}-${w}.md`);
+      return { args: ["--text-file", p], status: 2, planted: [p], missing: p };
+    },
+    "tracked file missing from the worktree": (w) => {
+      const name = `gone-${w}.md`;
+      return { cwd: makeRepo({ files: { "a.md": "zzz\n", [name]: "x\n" }, removeFromWorktree: [name] }), status: 2, planted: [name] };
+    },
+    "success line": () => ({ args: ["--text-file", successText], status: 0, planted: [] }),
   };
 
-  // Each cell runs in a fresh repository whose tracked files, commit message, and author contain none of the
-  // words (except where the place puts one there), so the path under test is the one that prints.
-  for (const [kind, words] of Object.entries(kinds)) {
+  for (const [kind, { words, input }] of Object.entries(kinds)) {
     for (const [place, make] of Object.entries(places)) {
       it(`${kind} × ${place}`, () => {
-        const { args = [], cwd = makeRepo({ files: { "a.md": "zzz\n" }, message: "zzz" }) } = make(words[0]);
+        const w = input ?? words[0];
+        const { args = [], cwd = makeRepo(), status, planted, missing } = make(w);
+        for (const text of planted) expect(contains(text, words[0])).toBe(true); // the word is really there
+        if (missing) expect(existsSync(missing)).toBe(false);
         const r = run(args, words.join("\n"), cwd);
-        if (place === "success line") expect(r.status).toBe(0); // the OK line was really printed
-        else expect([1, 2]).toContain(r.status);
+        expect(r.status).toBe(status);
         expect(leaked(r, words)).toEqual([]);
       });
     }
   }
 });
-
-let fileCount = 0;
-function file(tag, text, nameWord) {
-  const name = `${++fileCount}-${nameWord}.md`.replace(/[/\\]/g, "_");
-  const p = join(dir, name);
-  writeFileSync(p, text);
-  return p;
-}
