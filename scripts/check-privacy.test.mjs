@@ -18,6 +18,9 @@ const clean = join(dir, "clean.md");
 const dirty = join(dir, "dirty.md");
 writeFileSync(clean, "A reply with nothing private in it.\n");
 writeFileSync(dirty, `A reply that mentions ${PLANTED} by mistake.\n`);
+// Contains none of the grid's words (not even the letter e), so the success line is really printed
+const successText = join(dir, "zzz.md");
+writeFileSync(successText, "zzz\n");
 
 // Git runs with no global or system config and no identity from the environment, so the machine does not matter.
 function gitEnv() {
@@ -26,7 +29,7 @@ function gitEnv() {
   return env;
 }
 
-function makeRepo({ email = ALLOWED, files = { "a.md": "nothing\n" }, removeFromWorktree = [] } = {}) {
+function makeRepo({ email = ALLOWED, files = { "a.md": "nothing\n" }, removeFromWorktree = [], message = "init" } = {}) {
   const repo = mkdtempSync(join(tmpdir(), "check-privacy-repo-"));
   const git = (...a) =>
     execFileSync("git", ["-c", `user.email=${email}`, "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...a], {
@@ -37,7 +40,7 @@ function makeRepo({ email = ALLOWED, files = { "a.md": "nothing\n" }, removeFrom
   git("init", "-q");
   for (const [name, text] of Object.entries(files)) writeFileSync(join(repo, name), text);
   git("add", "-A");
-  git("commit", "-q", "-m", "init");
+  git("commit", "-q", "-m", message);
   for (const name of removeFromWorktree) rmSync(join(repo, name));
   return repo;
 }
@@ -121,15 +124,18 @@ describe("check-privacy output never contains a denied word", () => {
       const name = `gone-${w.replace(/[^a-z0-9]/gi, "")}.md`;
       return { cwd: makeRepo({ files: { "a.md": "nothing\n", [name]: "x\n" }, removeFromWorktree: [name] }) };
     },
-    "success line": () => ({ args: ["--text-file", clean] }),
+    "success line": () => ({ args: ["--text-file", successText] }),
   };
 
+  // Each cell runs in a fresh repository whose tracked files, commit message, and author contain none of the
+  // words (except where the place puts one there), so the path under test is the one that prints.
   for (const [kind, words] of Object.entries(kinds)) {
     for (const [place, make] of Object.entries(places)) {
       it(`${kind} × ${place}`, () => {
-        const { args = [], cwd } = make(words[0]);
+        const { args = [], cwd = makeRepo({ files: { "a.md": "zzz\n" }, message: "zzz" }) } = make(words[0]);
         const r = run(args, words.join("\n"), cwd);
-        expect([0, 1, 2]).toContain(r.status);
+        if (place === "success line") expect(r.status).toBe(0); // the OK line was really printed
+        else expect([1, 2]).toContain(r.status);
         expect(leaked(r, words)).toEqual([]);
       });
     }
