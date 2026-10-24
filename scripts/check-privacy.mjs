@@ -7,6 +7,10 @@
 //    If neither is set, this check is skipped with a warning.
 // 3. Texts about to be published (an issue body, a review reply) can be checked before posting:
 //    `npm run check:privacy -- --text-file <path>` (the option may be repeated).
+//
+// Nothing this script prints contains a denied word (CI logs are public too). The denylist is loaded first,
+// every line goes out through emit(), git's own stderr is captured, and unexpected errors are reported by a
+// fixed line. Exit codes: 0 OK, 1 a problem was found, 2 the check could not be done.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -17,83 +21,114 @@ const ALLOWED_EMAILS = new Set([
   "49699333+dependabot[bot]@users.noreply.github.com", // Dependabot
 ]);
 const TEXT_FILE = /\.(md|mdx|astro|ts|tsx|js|mjs|cjs|json|ya?ml|txt|css|html|svg)$/;
+const MARKER = "[redacted]";
 
-const textFiles = [];
-const args = process.argv.slice(2);
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--text-file" && i + 1 < args.length) textFiles.push(args[++i]);
-  else {
-    // The value is not echoed: the denylist is not loaded yet, so it could not be redacted
-    console.error(`check-privacy: unknown or incomplete argument at position ${i + 1} (usage: --text-file <path>, repeatable)`);
-    process.exit(2);
-  }
-}
+let denylist = [];
 
-const problems = [];
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const identities = execFileSync("git", ["log", "--format=%ae%n%ce"], { encoding: "utf8" }).split("\n").filter(Boolean);
-for (const email of new Set(identities)) {
-  if (!ALLOWED_EMAILS.has(email)) problems.push(`commit address not on the allow list: ${email}`);
-}
-
-const denylist = (process.env.PRIVACY_DENYLIST ?? (existsSync(".privacy-denylist") ? readFileSync(".privacy-denylist", "utf8") : ""))
-  .split("\n")
-  .map((w) => w.trim())
-  .filter(Boolean);
-if (denylist.length === 0 && textFiles.length > 0) {
-  // A text checked against nothing must not be reported as OK
-  console.error("check-privacy: --text-file given but no denied words configured (PRIVACY_DENYLIST or .privacy-denylist)");
-  process.exit(2);
-}
-if (denylist.length === 0) {
-  console.warn("check-privacy: no denied words configured, so the text check was skipped (PRIVACY_DENYLIST or .privacy-denylist)");
-} else {
-  const sources = [];
-  for (const file of execFileSync("git", ["ls-files"], { encoding: "utf8" }).split("\n").filter((f) => TEXT_FILE.test(f))) {
-    sources.push([file, readFileSync(file, "utf8")]);
-  }
-  const log = execFileSync("git", ["log", "--format=%H%x00%B%x00"], { encoding: "utf8" }).split("\0");
-  for (let i = 0; i + 1 < log.length; i += 2) sources.push([`message of commit ${log[i].trim().slice(0, 7)}`, log[i + 1]]);
-  if (process.env.PR_TEXT) sources.push(["PR title and body", process.env.PR_TEXT]);
-  textFiles.forEach((file, k) => {
-    let text;
-    try {
-      text = readFileSync(file, "utf8");
-    } catch {
-      // Node's own error would print the path; report the file by its number instead
-      console.error(`check-privacy: cannot read text file #${k + 1}`);
-      process.exit(2);
+// Returns the line with no denied word in it. Matches become MARKER first (readable output); then any denied
+// word still present (inside the marker, or formed where two parts meet) is deleted. Each deletion shortens the
+// line, so the loop ends, and it ends only when no denied word is left.
+function safe(line) {
+  let out = String(line);
+  for (const word of denylist) out = out.replace(new RegExp(escapeRegExp(word), "giu"), MARKER);
+  for (;;) {
+    let hit = null;
+    for (const word of denylist) {
+      const m = new RegExp(escapeRegExp(word), "iu").exec(out);
+      if (m) {
+        hit = m;
+        break;
+      }
     }
-    sources.push([`text file ${file}`, text]);
-  });
-
-  for (const [where, raw] of sources) {
-    const text = raw.toLowerCase();
-    // Never print the denied word itself (CI logs are public too)
-    denylist.forEach((word, i) => {
-      if (text.includes(word.toLowerCase())) problems.push(`${where}: contains a denied word (line ${i + 1} of the list)`);
-    });
+    if (!hit) return out;
+    out = out.slice(0, hit.index) + out.slice(hit.index + hit[0].length);
   }
 }
 
-// Every line printed goes through redact(), so a denied word never reaches the logs (CI logs are public),
-// wherever it came from: a file path, a commit address, or anything else in a message.
-function redact(line) {
-  let out = line;
-  for (const word of denylist) {
-    const lower = out.toLowerCase();
-    const w = word.toLowerCase();
-    let i = lower.indexOf(w);
-    while (i !== -1) {
-      out = out.slice(0, i) + "[redacted]" + out.slice(i + w.length);
-      i = out.toLowerCase().indexOf(w, i + "[redacted]".length);
+function emit(stream, line) {
+  stream.write(`${safe(line)}\n`);
+}
+
+function fail(code, line) {
+  emit(process.stderr, line);
+  process.exit(code);
+}
+
+// git with its stderr captured, so git's own messages (which may quote paths) never reach the log
+const git = (args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+function main() {
+  denylist = (process.env.PRIVACY_DENYLIST ?? (existsSync(".privacy-denylist") ? readFileSync(".privacy-denylist", "utf8") : ""))
+    .split("\n")
+    .map((w) => w.trim())
+    .filter(Boolean);
+
+  const textFiles = [];
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--text-file" && i + 1 < args.length) textFiles.push(args[++i]);
+    else fail(2, `check-privacy: unknown or incomplete argument: ${args[i]} (usage: --text-file <path>, repeatable)`);
+  }
+  if (denylist.length === 0 && textFiles.length > 0) {
+    // A text checked against nothing must not be reported as OK
+    fail(2, "check-privacy: --text-file given but no denied words configured (PRIVACY_DENYLIST or .privacy-denylist)");
+  }
+
+  const problems = [];
+  const identities = git(["log", "--format=%ae%n%ce"]).split("\n").filter(Boolean);
+  for (const email of new Set(identities)) {
+    if (!ALLOWED_EMAILS.has(email)) problems.push(`commit address not on the allow list: ${email}`);
+  }
+
+  if (denylist.length === 0) {
+    emit(process.stderr, "check-privacy: no denied words configured, so the text check was skipped (PRIVACY_DENYLIST or .privacy-denylist)");
+  } else {
+    const sources = [];
+    for (const file of git(["ls-files"]).split("\n").filter((f) => TEXT_FILE.test(f))) {
+      let text;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        fail(2, `check-privacy: cannot read tracked file ${file}`);
+      }
+      sources.push([file, text]);
+    }
+    const log = git(["log", "--format=%H%x00%B%x00"]).split("\0");
+    for (let i = 0; i + 1 < log.length; i += 2) sources.push([`message of commit ${log[i].trim().slice(0, 7)}`, log[i + 1]]);
+    if (process.env.PR_TEXT) sources.push(["PR title and body", process.env.PR_TEXT]);
+    for (const file of textFiles) {
+      let text;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        fail(2, `check-privacy: cannot read text file ${file}`);
+      }
+      sources.push([`text file ${file}`, text]);
+    }
+
+    for (const [where, raw] of sources) {
+      const text = raw.toLowerCase();
+      denylist.forEach((word, i) => {
+        if (text.includes(word.toLowerCase())) problems.push(`${where}: contains a denied word (line ${i + 1} of the list)`);
+      });
     }
   }
-  return out;
+
+  if (problems.length > 0) {
+    for (const p of problems) emit(process.stderr, p);
+    process.exit(1);
+  }
+  emit(
+    process.stdout,
+    `check-privacy: OK (${new Set(identities).size} commit addresses, ${denylist.length} denied words, PR text ${process.env.PR_TEXT ? "checked" : "absent"}, ${textFiles.length} text files)`,
+  );
 }
 
-if (problems.length > 0) {
-  for (const p of problems) console.error(redact(p));
-  process.exit(1);
+try {
+  main();
+} catch {
+  // The error's own message may quote paths or git output; report it by a fixed line
+  fail(2, "check-privacy: the check could not be completed (unexpected error)");
 }
-console.log(`check-privacy: OK (${new Set(identities).size} commit addresses, ${denylist.length} denied words, PR text ${process.env.PR_TEXT ? "checked" : "absent"}, ${textFiles.length} text files)`);
