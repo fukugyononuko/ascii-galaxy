@@ -5,9 +5,9 @@
 // - Nothing the checker prints (stdout or stderr, any line, any exit path) contains any denied word, using the
 //   checker's own notion of "contains" (both sides lowercased, then substring).
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // Built at run time so the word itself never appears in a tracked file (the checker scans tracked files).
@@ -42,7 +42,10 @@ function makeRepo({ email = ALLOWED, files = { "a.md": "zzz\n" }, removeFromWork
       stdio: ["ignore", "pipe", "pipe"],
     });
   git("init", "-q");
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(repo, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, name)), { recursive: true });
+    writeFileSync(join(repo, name), text);
+  }
   git("add", "-A");
   git("commit", "-q", "-m", message);
   for (const name of removeFromWorktree) rmSync(join(repo, name));
@@ -172,6 +175,24 @@ describe("check-privacy --text-file", SLOW, () => {
     const r = spawnSync("node", [SCRIPT], { encoding: "utf8", env, cwd: a });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("a.md: contains a denied word");
+  });
+
+  it("reads tracked files when GIT_DIR and GIT_WORK_TREE are relative to a nested caller directory", () => {
+    const repo = makeRepo({ files: { "a.md": `${PLANTED}\n` } });
+    const caller = join(mkdtempSync(join(tmpdir(), "check-privacy-caller-")), "caller", "deep");
+    mkdirSync(caller, { recursive: true });
+    const env = { ...baseEnv(), PRIVACY_DENYLIST: PLANTED, GIT_DIR: relative(caller, join(repo, ".git")), GIT_WORK_TREE: relative(caller, repo) };
+    expect(env.GIT_DIR.startsWith("..")).toBe(true); // really relative
+    const r = spawnSync("node", [SCRIPT], { encoding: "utf8", env, cwd: caller });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("a.md: contains a denied word");
+  });
+
+  it("checks the whole work tree when run from a subdirectory", () => {
+    const repo = makeRepo({ files: { "top.md": `${PLANTED}\n`, "sub/inner.md": "zzz\n" } });
+    const r = run([], PLANTED, join(repo, "sub"));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("top.md: contains a denied word");
   });
 
   it("reports the denylist line number as written, counting blank lines", () => {

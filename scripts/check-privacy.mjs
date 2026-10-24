@@ -97,10 +97,12 @@ function main() {
     // Names are kept as raw bytes: -z stops git quoting non-ASCII names, and a Buffer path keeps names that
     // are not valid UTF-8 (allowed on Linux) pointing at the real file. Only the label is decoded.
     // Files are read under Git's own work tree (which GIT_WORK_TREE may move away from the current directory):
-    // names are listed relative to its top and joined to it.
+    // names are listed relative to its top (--full-name) and joined to it. The pathspec ":/" lists the whole
+    // work tree even from a subdirectory. Git runs from the current directory throughout, so relative
+    // GIT_DIR / GIT_WORK_TREE values keep their meaning.
     const top = gitRaw(["rev-parse", "--show-toplevel"]);
     const root = Buffer.concat([top.subarray(0, top.at(-1) === 0x0a ? -1 : undefined), Buffer.from("/")]);
-    splitNul(gitRaw(["-C", root.toString("utf8"), "ls-files", "-z", "--full-name"]))
+    splitNul(gitRaw(["ls-files", "-z", "--full-name", "--", ":/"]))
       .filter((b) => TEXT_FILE.test(b.toString("latin1")))
       .forEach((name, k) => {
         const label = name.toString("utf8");
