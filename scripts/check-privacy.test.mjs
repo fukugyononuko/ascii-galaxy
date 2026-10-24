@@ -49,12 +49,20 @@ function makeRepo({ email = ALLOWED, files = { "a.md": "zzz\n" }, removeFromWork
   return repo;
 }
 
-function run(args, denylist = PLANTED, cwd = process.cwd()) {
-  return spawnSync("node", [SCRIPT, ...args], { encoding: "utf8", env: { ...baseEnv(), PRIVACY_DENYLIST: denylist }, cwd });
+function run(args, denylist = PLANTED, cwd = process.cwd(), timeout = undefined) {
+  return spawnSync("node", [SCRIPT, ...args], { encoding: "utf8", env: { ...baseEnv(), PRIVACY_DENYLIST: denylist }, cwd, timeout });
 }
 
-// The checker's own notion of "contains"
-const contains = (text, word) => text.toLowerCase().includes(word.toLowerCase());
+const gitIn = (repo, ...a) =>
+  execFileSync("git", ["-c", `user.email=${ALLOWED}`, "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...a], {
+    cwd: repo,
+    env: baseEnv(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+// The checker's own notion of "contains": each code point lowercased on its own, then substring
+const lowerEach = (text) => Array.from(text, (c) => c.toLowerCase()).join("");
+const contains = (text, word) => lowerEach(text).includes(lowerEach(word));
 const leaked = (r, words) => words.filter((w) => contains(r.stdout + r.stderr, w));
 
 describe("check-privacy --text-file", () => {
@@ -109,6 +117,41 @@ describe("check-privacy --text-file", () => {
     expect(r.stderr).toContain("日本語.md: contains a denied word");
   });
 
+  it("checks tracked files whose names are not valid UTF-8 (skipped where the file system rejects such names)", (ctx) => {
+    const repo = makeRepo();
+    const name = Buffer.from([0x62, 0x61, 0x64, 0x2d, 0xff, 0x2e, 0x6d, 0x64]); // "bad-\xff.md"
+    try {
+      writeFileSync(Buffer.concat([Buffer.from(`${repo}/`), name]), `${PLANTED}\n`);
+    } catch {
+      ctx.skip(); // e.g. APFS on macOS; runs on Linux CI
+    }
+    gitIn(repo, "add", "-A");
+    gitIn(repo, "commit", "-q", "-m", "zzz");
+    const r = run([], PLANTED, repo);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("contains a denied word");
+  });
+
+  it("redacts a long line with many case-mapped matches quickly", () => {
+    const r = run([`--${"i̇".repeat(50000)}`], "İ", process.cwd(), 3000);
+    expect(r.status).toBe(2);
+    expect(leaked(r, ["İ"])).toEqual([]);
+  });
+
+  it("redacts nested matches quickly", () => {
+    const r = run([`--${"a".repeat(20000)}${"b".repeat(20000)}`], "ab", process.cwd(), 3000);
+    expect(r.status).toBe(2);
+    expect(leaked(r, ["ab"])).toEqual([]);
+  });
+
+  it("drops a line whose deletions keep forming new matches", () => {
+    // The marker is denied too, so each pass deletes it and joins "a…a" to "b…b" into a new "ab"
+    const words = ["ab", "[redacted]"];
+    const r = run([`--${"a".repeat(6)}${"b".repeat(6)}`], words.join("\n"), process.cwd(), 3000);
+    expect(r.status).toBe(2);
+    expect(leaked(r, words)).toEqual([]);
+  });
+
   it("ignores Git variables of the calling session", () => {
     const repo = makeRepo();
     const env = { ...baseEnv(), PRIVACY_DENYLIST: PLANTED, GIT_DIR: join(dir, "not-a-git-dir") };
@@ -129,7 +172,8 @@ describe("check-privacy output never contains a denied word", () => {
     "the marker itself": { words: ["[redacted]"] },
     "in fixed messages": { words: ["OK", "check", "text file", "contains"] },
     "one letter": { words: ["e"] },
-    overlapping: { words: [`${PLANTED}ab`, "abc", "bc"] },
+    // The input holds all three entries, overlapping each other
+    overlapping: { words: [`${PLANTED}ab`, "abc", "bc"], input: `${PLANTED}abc`, allPlanted: true },
     // "İ".toLowerCase() is "i" + U+0307 (two code points); the input uses that lowercase form
     "Unicode case": { words: ["İ"], input: "i̇" },
   };
@@ -161,12 +205,13 @@ describe("check-privacy output never contains a denied word", () => {
     "success line": () => ({ args: ["--text-file", successText], status: 0, planted: [] }),
   };
 
-  for (const [kind, { words, input }] of Object.entries(kinds)) {
+  for (const [kind, { words, input, allPlanted }] of Object.entries(kinds)) {
     for (const [place, make] of Object.entries(places)) {
       it(`${kind} × ${place}`, () => {
         const w = input ?? words[0];
         const { args = [], cwd = makeRepo(), status, planted, missing } = make(w);
-        for (const text of planted) expect(contains(text, words[0])).toBe(true); // the word is really there
+        // the word (every word, for the overlapping kind) is really there
+        for (const text of planted) for (const word of allPlanted ? words : [words[0]]) expect(contains(text, word)).toBe(true);
         if (missing) expect(existsSync(missing)).toBe(false);
         const r = run(args, words.join("\n"), cwd);
         expect(r.status).toBe(status);
