@@ -23,7 +23,8 @@ const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--text-file" && i + 1 < args.length) textFiles.push(args[++i]);
   else {
-    console.error(`check-privacy: unknown or incomplete argument: ${args[i]} (usage: --text-file <path>, repeatable)`);
+    // The value is not echoed: the denylist is not loaded yet, so it could not be redacted
+    console.error(`check-privacy: unknown or incomplete argument at position ${i + 1} (usage: --text-file <path>, repeatable)`);
     process.exit(2);
   }
 }
@@ -54,7 +55,17 @@ if (denylist.length === 0) {
   const log = execFileSync("git", ["log", "--format=%H%x00%B%x00"], { encoding: "utf8" }).split("\0");
   for (let i = 0; i + 1 < log.length; i += 2) sources.push([`message of commit ${log[i].trim().slice(0, 7)}`, log[i + 1]]);
   if (process.env.PR_TEXT) sources.push(["PR title and body", process.env.PR_TEXT]);
-  for (const file of textFiles) sources.push([`text file ${file}`, readFileSync(file, "utf8")]);
+  textFiles.forEach((file, k) => {
+    let text;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      // Node's own error would print the path; report the file by its number instead
+      console.error(`check-privacy: cannot read text file #${k + 1}`);
+      process.exit(2);
+    }
+    sources.push([`text file ${file}`, text]);
+  });
 
   for (const [where, raw] of sources) {
     const text = raw.toLowerCase();
@@ -65,8 +76,24 @@ if (denylist.length === 0) {
   }
 }
 
+// Every line printed goes through redact(), so a denied word never reaches the logs (CI logs are public),
+// wherever it came from: a file path, a commit address, or anything else in a message.
+function redact(line) {
+  let out = line;
+  for (const word of denylist) {
+    const lower = out.toLowerCase();
+    const w = word.toLowerCase();
+    let i = lower.indexOf(w);
+    while (i !== -1) {
+      out = out.slice(0, i) + "[redacted]" + out.slice(i + w.length);
+      i = out.toLowerCase().indexOf(w, i + "[redacted]".length);
+    }
+  }
+  return out;
+}
+
 if (problems.length > 0) {
-  for (const p of problems) console.error(p);
+  for (const p of problems) console.error(redact(p));
   process.exit(1);
 }
 console.log(`check-privacy: OK (${new Set(identities).size} commit addresses, ${denylist.length} denied words, PR text ${process.env.PR_TEXT ? "checked" : "absent"}, ${textFiles.length} text files)`);
