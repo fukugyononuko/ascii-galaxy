@@ -8,9 +8,12 @@
 // 3. Texts about to be published (an issue body, a review reply) can be checked before posting:
 //    `npm run check:privacy -- --text-file <path>` (the option may be repeated).
 //
-// Nothing this script prints contains a denied word (CI logs are public too). The denylist is loaded first,
-// every line goes out through emit(), git's own stderr is captured, and unexpected errors are reported by a
-// fixed line. Exit codes: 0 OK, 1 a problem was found, 2 the check could not be done.
+// Nothing this script prints contains a denied word (CI logs are public too), in the same sense the check uses.
+// Lines are judged whole, never partly redacted: each message has candidates, from the most helpful (with a
+// path or value) to one that names things only by number; the first candidate that contains no denied word is
+// printed, and if none qualifies an empty line is printed. Git's own stderr is captured, and unexpected errors
+// are reported by a fixed message. Exit codes: 0 OK, 1 a problem was found, 2 the check could not be done.
+// Git runs in the caller's Git environment (GIT_DIR and the like are respected, as for any Git command).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -21,71 +24,23 @@ const ALLOWED_EMAILS = new Set([
   "49699333+dependabot[bot]@users.noreply.github.com", // Dependabot
 ]);
 const TEXT_FILE = /\.(md|mdx|astro|ts|tsx|js|mjs|cjs|json|ya?ml|txt|css|html|svg)$/;
-const MARKER = "[redacted]";
 
-let denylist = [];
-
-const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-// One notion of "contains", shared by detection and by safe(): each code point lowercased on its own, then
-// substring. lowerMap() also records, for every lowercase unit, the code point of the original it came from
-// (lowercasing can change length: "İ" becomes "i" + U+0307), so a match maps back to an exact original span.
-function lowerMap(text) {
-  let lower = "";
-  const from = [];
-  const to = [];
-  for (let p = 0; p < text.length; ) {
-    const cp = text.codePointAt(p);
-    const len = cp > 0xffff ? 2 : 1;
-    const s = String.fromCodePoint(cp).toLowerCase();
-    for (let k = 0; k < s.length; k++) {
-      from.push(p);
-      to.push(p + len);
-    }
-    lower += s;
-    p += len;
-  }
-  return { lower, from, to };
-}
-const lower = (text) => lowerMap(text).lower;
+// "Contains" means: each code point lowercased on its own, then substring. Used for detection and for output.
+const lower = (text) => Array.from(text, (c) => c.toLowerCase()).join("");
 let lowerWords = [];
 const containsAny = (text) => {
   const low = lower(text);
   return lowerWords.some((w) => low.includes(w));
 };
 
-// Returns the line with no denied word in it, in the same sense the check uses. Matches become MARKER first
-// (readable output). Then each pass finds every remaining match in one scan and deletes all of their original
-// spans (inside the marker, where parts meet, or through case mapping). Deleting can join parts into a new
-// match, so after a few passes a line that still contains a word is dropped entirely. Work is linear in the
-// line length per pass, and the result never contains a denied word.
-function safe(line) {
-  let out = String(line);
-  for (const word of denylist) out = out.replace(new RegExp(escapeRegExp(word), "giu"), MARKER);
-  for (let pass = 0; pass < 3; pass++) {
-    const { lower: low, from, to } = lowerMap(out);
-    const cut = new Uint8Array(out.length);
-    let found = false;
-    for (const w of lowerWords) {
-      for (let k = low.indexOf(w); k !== -1; k = low.indexOf(w, k + 1)) {
-        found = true;
-        cut.fill(1, from[k], to[k + w.length - 1]);
-      }
-    }
-    if (!found) return out;
-    let next = "";
-    for (let q = 0; q < out.length; q++) if (!cut[q]) next += out[q];
-    out = next;
-  }
-  return containsAny(out) ? "" : out;
+// Prints the first candidate that contains no denied word, or an empty line if none does.
+function emit(stream, ...candidates) {
+  const line = candidates.find((c) => !containsAny(c)) ?? "";
+  stream.write(`${line}\n`);
 }
 
-function emit(stream, line) {
-  stream.write(`${safe(line)}\n`);
-}
-
-function fail(code, line) {
-  emit(process.stderr, line);
+function fail(code, ...candidates) {
+  emit(process.stderr, ...candidates);
   process.exit(code);
 }
 
@@ -104,7 +59,7 @@ function splitNul(buf) {
 }
 
 function main() {
-  denylist = (process.env.PRIVACY_DENYLIST ?? (existsSync(".privacy-denylist") ? readFileSync(".privacy-denylist", "utf8") : ""))
+  const denylist = (process.env.PRIVACY_DENYLIST ?? (existsSync(".privacy-denylist") ? readFileSync(".privacy-denylist", "utf8") : ""))
     .split("\n")
     .map((w) => w.trim())
     .filter(Boolean);
@@ -114,58 +69,72 @@ function main() {
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--text-file" && i + 1 < args.length) textFiles.push(args[++i]);
-    else fail(2, `check-privacy: unknown or incomplete argument: ${args[i]} (usage: --text-file <path>, repeatable)`);
+    else
+      fail(
+        2,
+        `check-privacy: unknown or incomplete argument: ${args[i]} (usage: --text-file <path>, repeatable)`,
+        `check-privacy: unknown or incomplete argument at position ${i + 1}`,
+      );
   }
   if (denylist.length === 0 && textFiles.length > 0) {
     // A text checked against nothing must not be reported as OK
     fail(2, "check-privacy: --text-file given but no denied words configured (PRIVACY_DENYLIST or .privacy-denylist)");
   }
 
+  // Each problem is a list of candidate messages (see emit)
   const problems = [];
   const identities = git(["log", "--format=%ae%n%ce"]).split("\n").filter(Boolean);
-  for (const email of new Set(identities)) {
-    if (!ALLOWED_EMAILS.has(email)) problems.push(`commit address not on the allow list: ${email}`);
-  }
+  [...new Set(identities)].forEach((email, k) => {
+    if (!ALLOWED_EMAILS.has(email)) problems.push([`commit address not on the allow list: ${email}`, `commit address #${k + 1} not on the allow list`]);
+  });
 
   if (denylist.length === 0) {
     emit(process.stderr, "check-privacy: no denied words configured, so the text check was skipped (PRIVACY_DENYLIST or .privacy-denylist)");
   } else {
+    // [label, label by number, text]
     const sources = [];
     // Names are kept as raw bytes: -z stops git quoting non-ASCII names, and a Buffer path keeps names that
     // are not valid UTF-8 (allowed on Linux) pointing at the real file. Only the label is decoded.
-    for (const name of splitNul(gitRaw(["ls-files", "-z"])).filter((b) => TEXT_FILE.test(b.toString("latin1")))) {
-      const label = name.toString("utf8");
-      let text;
-      try {
-        text = readFileSync(name, "utf8");
-      } catch {
-        fail(2, `check-privacy: cannot read tracked file ${label}`);
-      }
-      sources.push([label, text]);
-    }
+    splitNul(gitRaw(["ls-files", "-z"]))
+      .filter((b) => TEXT_FILE.test(b.toString("latin1")))
+      .forEach((name, k) => {
+        const label = name.toString("utf8");
+        let text;
+        try {
+          text = readFileSync(name, "utf8");
+        } catch {
+          fail(2, `check-privacy: cannot read tracked file ${label}`, `check-privacy: cannot read tracked file #${k + 1}`);
+        }
+        sources.push([label, `tracked file #${k + 1}`, text]);
+      });
     const log = git(["log", "--format=%H%x00%B%x00"]).split("\0");
-    for (let i = 0; i + 1 < log.length; i += 2) sources.push([`message of commit ${log[i].trim().slice(0, 7)}`, log[i + 1]]);
-    if (process.env.PR_TEXT) sources.push(["PR title and body", process.env.PR_TEXT]);
-    for (const file of textFiles) {
+    for (let i = 0; i + 1 < log.length; i += 2) {
+      sources.push([`message of commit ${log[i].trim().slice(0, 7)}`, `commit message #${i / 2 + 1}`, log[i + 1]]);
+    }
+    if (process.env.PR_TEXT) sources.push(["PR title and body", "PR title and body", process.env.PR_TEXT]);
+    textFiles.forEach((file, k) => {
       let text;
       try {
         text = readFileSync(file, "utf8");
       } catch {
-        fail(2, `check-privacy: cannot read text file ${file}`);
+        fail(2, `check-privacy: cannot read text file ${file}`, `check-privacy: cannot read text file #${k + 1}`);
       }
-      sources.push([`text file ${file}`, text]);
-    }
+      sources.push([`text file ${file}`, `text file #${k + 1}`, text]);
+    });
 
-    for (const [where, raw] of sources) {
+    for (const [label, byNumber, raw] of sources) {
       const low = lower(raw);
       lowerWords.forEach((word, i) => {
-        if (low.includes(word)) problems.push(`${where}: contains a denied word (line ${i + 1} of the list)`);
+        if (low.includes(word)) {
+          const what = `contains a denied word (line ${i + 1} of the list)`;
+          problems.push([`${label}: ${what}`, `${byNumber}: ${what}`]);
+        }
       });
     }
   }
 
   if (problems.length > 0) {
-    for (const p of problems) emit(process.stderr, p);
+    for (const candidates of problems) emit(process.stderr, ...candidates);
     process.exit(1);
   }
   emit(
@@ -177,6 +146,6 @@ function main() {
 try {
   main();
 } catch {
-  // The error's own message may quote paths or git output; report it by a fixed line
+  // The error's own message may quote paths or git output; report it by a fixed message
   fail(2, "check-privacy: the check could not be completed (unexpected error)");
 }

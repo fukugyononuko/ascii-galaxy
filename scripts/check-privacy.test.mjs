@@ -154,10 +154,17 @@ describe("check-privacy --text-file", () => {
     expect(leaked(r, words)).toEqual([]);
   });
 
-  it("ignores Git variables of the calling session", () => {
+  it("handles a long denied word with many overlapping matches quickly", () => {
+    const r = run([`--${"i̇".repeat(40000)}`], "İ".repeat(19000), process.cwd(), 3000);
+    expect(r.error?.code).toBeUndefined();
+    expect(r.status).toBe(2);
+    expect(leaked(r, ["İ".repeat(19000)])).toEqual([]);
+  });
+
+  // The checker itself respects GIT_DIR like any Git command; the tests must not inherit the session's value
+  it("test helpers drop Git variables of the calling session", () => {
     const repo = makeRepo();
     const env = { ...baseEnv(), PRIVACY_DENYLIST: PLANTED, GIT_DIR: join(dir, "not-a-git-dir") };
-    // run() and makeRepo() build their own environment; this checks that baseEnv() really drops GIT_DIR
     expect(Object.keys(baseEnv())).not.toContain("GIT_DIR");
     expect(spawnSync("node", [SCRIPT], { encoding: "utf8", env, cwd: repo }).status).toBe(2); // GIT_DIR would break git
     expect(run([], PLANTED, repo).status).toBe(0);
@@ -204,11 +211,16 @@ describe("check-privacy output never contains a denied word", () => {
       const name = `gone-${w}.md`;
       return { cwd: makeRepo({ files: { "a.md": "zzz\n", [name]: "x\n" }, removeFromWorktree: [name] }), status: 2, planted: [name] };
     },
-    "success line": () => ({ args: ["--text-file", successText], status: 0, planted: [] }),
+    // The words reach this line only through its fixed text, so the cell exists only for kinds whose word
+    // appears in that text (see `applies` below)
+    "success line": () => ({ args: ["--text-file", successText], status: 0, planted: [SUCCESS_TEXT] }),
   };
+  const SUCCESS_TEXT = "check-privacy: OK (commit addresses, denied words, PR text absent, text files)";
+  const applies = (place, w) => place !== "success line" || contains(SUCCESS_TEXT, w);
 
   for (const [kind, { words, input, allPlanted }] of Object.entries(kinds)) {
     for (const [place, make] of Object.entries(places)) {
+      if (!applies(place, input ?? words[0])) continue;
       it(`${kind} × ${place}`, () => {
         const w = input ?? words[0];
         const { args = [], cwd = makeRepo(), status, planted, missing } = make(w);
