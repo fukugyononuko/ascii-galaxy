@@ -165,6 +165,21 @@ describe("check-privacy --text-file", SLOW, () => {
     expect(leaked(r, ["İ".repeat(19000)])).toEqual([]);
   });
 
+  it("reads tracked files from Git's work tree, not from the current directory", () => {
+    const a = makeRepo({ files: { "a.md": "zzz\n" } });
+    const b = makeRepo({ files: { "a.md": `${PLANTED}\n` } });
+    const env = { ...baseEnv(), PRIVACY_DENYLIST: PLANTED, GIT_DIR: join(b, ".git"), GIT_WORK_TREE: b };
+    const r = spawnSync("node", [SCRIPT], { encoding: "utf8", env, cwd: a });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("a.md: contains a denied word");
+  });
+
+  it("reports the denylist line number as written, counting blank lines", () => {
+    const r = run(["--text-file", dirty], `\n  \n${PLANTED}`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("(line 3 of the list)");
+  });
+
   // The checker itself respects GIT_DIR like any Git command; the tests must not inherit the session's value
   it("test helpers drop Git variables of the calling session", () => {
     const repo = makeRepo();

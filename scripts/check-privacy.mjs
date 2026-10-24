@@ -59,11 +59,12 @@ function splitNul(buf) {
 }
 
 function main() {
+  // Each entry keeps the line it was written on, so diagnostics point at the right line even with blank lines
   const denylist = (process.env.PRIVACY_DENYLIST ?? (existsSync(".privacy-denylist") ? readFileSync(".privacy-denylist", "utf8") : ""))
     .split("\n")
-    .map((w) => w.trim())
-    .filter(Boolean);
-  lowerWords = denylist.map(lower);
+    .map((w, i) => ({ word: w.trim(), line: i + 1 }))
+    .filter((e) => e.word);
+  lowerWords = denylist.map((e) => lower(e.word));
 
   const textFiles = [];
   const args = process.argv.slice(2);
@@ -95,13 +96,17 @@ function main() {
     const sources = [];
     // Names are kept as raw bytes: -z stops git quoting non-ASCII names, and a Buffer path keeps names that
     // are not valid UTF-8 (allowed on Linux) pointing at the real file. Only the label is decoded.
-    splitNul(gitRaw(["ls-files", "-z"]))
+    // Files are read under Git's own work tree (which GIT_WORK_TREE may move away from the current directory):
+    // names are listed relative to its top and joined to it.
+    const top = gitRaw(["rev-parse", "--show-toplevel"]);
+    const root = Buffer.concat([top.subarray(0, top.at(-1) === 0x0a ? -1 : undefined), Buffer.from("/")]);
+    splitNul(gitRaw(["-C", root.toString("utf8"), "ls-files", "-z", "--full-name"]))
       .filter((b) => TEXT_FILE.test(b.toString("latin1")))
       .forEach((name, k) => {
         const label = name.toString("utf8");
         let text;
         try {
-          text = readFileSync(name, "utf8");
+          text = readFileSync(Buffer.concat([root, name]), "utf8");
         } catch {
           fail(2, `check-privacy: cannot read tracked file ${label}`, `check-privacy: cannot read tracked file #${k + 1}`);
         }
@@ -126,7 +131,7 @@ function main() {
       const low = lower(raw);
       lowerWords.forEach((word, i) => {
         if (low.includes(word)) {
-          const what = `contains a denied word (line ${i + 1} of the list)`;
+          const what = `contains a denied word (line ${denylist[i].line} of the list)`;
           problems.push([`${label}: ${what}`, `${byNumber}: ${what}`]);
         }
       });
