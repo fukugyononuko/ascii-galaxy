@@ -5,7 +5,7 @@
 // - Nothing the checker prints (stdout or stderr, any line, any exit path) contains any denied word, using the
 //   checker's own notion of "contains" (both sides lowercased, then substring).
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -193,6 +193,26 @@ describe("check-privacy --text-file", SLOW, () => {
     const r = run([], PLANTED, join(repo, "sub"));
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("top.md: contains a denied word");
+  });
+
+  it("lists every tracked file even when the caller sets pathspec-mode variables", () => {
+    const repo = makeRepo({ files: { "leak.md": `${PLANTED}\n` } });
+    for (const v of ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"]) {
+      const env = { ...baseEnv(), PRIVACY_DENYLIST: PLANTED, [v]: "1" };
+      const r = spawnSync("node", [SCRIPT], { encoding: "utf8", env, cwd: repo });
+      expect(r.status, v).toBe(1);
+    }
+  });
+
+  it("checks the link text of a tracked symbolic link, not the file it points to", () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, `${PLANTED}-target`), "zzz\n"); // clean, untracked
+    symlinkSync(`${PLANTED}-target`, join(repo, "link.md"));
+    gitIn(repo, "add", "link.md");
+    gitIn(repo, "commit", "-q", "-m", "zzz");
+    const r = run([], PLANTED, repo);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("link.md: contains a denied word");
   });
 
   it("reports the denylist line number as written, counting blank lines", () => {

@@ -15,7 +15,7 @@
 // are reported by a fixed message. Exit codes: 0 OK, 1 a problem was found, 2 the check could not be done.
 // Git runs in the caller's Git environment (GIT_DIR and the like are respected, as for any Git command).
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 
 const ALLOWED_EMAILS = new Set([
   "340638804+fukugyononuko@users.noreply.github.com", // commit author (git config)
@@ -44,8 +44,11 @@ function fail(code, ...candidates) {
   process.exit(code);
 }
 
-// git with its stderr captured, so git's own messages (which may quote paths) never reach the log
-const gitRaw = (args) => execFileSync("git", args, { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 30 });
+// git with its stderr captured, so git's own messages (which may quote paths) never reach the log. Variables
+// that change how pathspecs are read are dropped, so the fixed ":/" below always means "the whole work tree".
+const PATHSPEC_VARS = ["GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"];
+const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !PATHSPEC_VARS.includes(k)));
+const gitRaw = (args) => execFileSync("git", args, { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 30, env: gitEnv });
 const git = (args) => gitRaw(args).toString("utf8");
 function splitNul(buf) {
   const parts = [];
@@ -108,7 +111,9 @@ function main() {
         const label = name.toString("utf8");
         let text;
         try {
-          text = readFileSync(Buffer.concat([root, name]), "utf8");
+          const path = Buffer.concat([root, name]);
+          // A tracked symbolic link is stored as its link text, so that text is what gets published
+          text = lstatSync(path).isSymbolicLink() ? readlinkSync(path, { encoding: "buffer" }).toString("utf8") : readFileSync(path, "utf8");
         } catch {
           fail(2, `check-privacy: cannot read tracked file ${label}`, `check-privacy: cannot read tracked file #${k + 1}`);
         }
