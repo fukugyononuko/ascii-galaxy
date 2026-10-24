@@ -65,7 +65,11 @@ const lowerEach = (text) => Array.from(text, (c) => c.toLowerCase()).join("");
 const contains = (text, word) => lowerEach(text).includes(lowerEach(word));
 const leaked = (r, words) => words.filter((w) => contains(r.stdout + r.stderr, w));
 
-describe("check-privacy --text-file", () => {
+// Cells create Git repositories and start Node; on a busy machine that can pass Vitest's 5 s default. The
+// performance tests keep their own 3 s limit on the checker process.
+const SLOW = { timeout: 20000 };
+
+describe("check-privacy --text-file", SLOW, () => {
   it("fails when the text contains a denied word, without printing the word", () => {
     const r = run(["--text-file", dirty]);
     expect(r.status).toBe(1);
@@ -174,7 +178,7 @@ describe("check-privacy --text-file", () => {
 // Grid: kinds of denied word × places a word can reach the output. In every cell the word is really put in the
 // named place (checked), the exit code is the one that place produces, and nothing printed contains any denied
 // word. "input" is how the word is written into the place; it may differ from the denylist entry in case.
-describe("check-privacy output never contains a denied word", () => {
+describe("check-privacy output never contains a denied word", SLOW, () => {
   const kinds = {
     planted: { words: [PLANTED] },
     "inside the marker": { words: ["redacted"] },
